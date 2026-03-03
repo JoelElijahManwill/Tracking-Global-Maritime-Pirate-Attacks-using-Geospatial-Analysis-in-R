@@ -1,0 +1,246 @@
+---
+title: "Part 3 Final Project Report: Spatial Analysis of Maritime Piracy"
+author: "Haley Burdick + Elijah Manwill"
+date: "2025-04-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Install required packages if not already installed
+if (!require(corrplot)) {
+  install.packages("corrplot")
+}
+if (!require(rnaturalearth)) {
+  install.packages("rnaturalearth")
+}
+if (!require(rnaturalearthdata)) {
+  install.packages("rnaturalearthdata")
+}
+if (!require(leaflet)) {
+  install.packages("leaflet")
+}
+if (!require(shiny)) {
+  install.packages("shiny")
+}
+
+# Load required libraries
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(scales)
+library(corrplot)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(leaflet)
+library(shiny)
+```
+
+# The Challenge
+
+Maritime piracy remains a significant global security concern, particularly in regions with high shipping traffic and limited maritime security. This analysis focuses on identifying patterns and risk factors associated with pirate attacks worldwide, with particular attention to high-risk regions such as the Gulf of Aden, the Strait of Malacca, and the Gulf of Guinea.
+
+The importance of this analysis lies in its potential to:
+- Identify high-risk areas for maritime security planning
+- Understand the relationship between socio-economic factors and piracy
+- Develop predictive models for piracy risk assessment
+- Inform maritime security policy and resource allocation
+
+Key research questions:
+1. What are the spatial patterns of pirate attacks, and are there significant clusters?
+2. How do socio-economic factors correlate with piracy incidents?
+3. Can we develop a predictive model to identify high-risk areas?
+
+```{r region_map, echo=FALSE}
+# Create a map of high-risk regions
+world <- ne_countries(scale = "medium", returnclass = "sf")
+high_risk_regions <- data.frame(
+  region = c("Gulf of Aden", "Strait of Malacca", "Gulf of Guinea"),
+  lon = c(48, 100, 5),
+  lat = c(12, 2, 5)
+)
+
+ggplot() +
+  geom_sf(data = world, fill = "lightgray", color = "gray") +
+  geom_point(data = high_risk_regions, aes(x = lon, y = lat), 
+             color = "red", size = 3) +
+  geom_text(data = high_risk_regions, aes(x = lon, y = lat, label = region),
+            hjust = -0.1, vjust = 0.5) +
+  labs(title = "Major Maritime Piracy Hotspots",
+       subtitle = "Red dots indicate high-risk regions") +
+  theme_minimal()
+```
+
+# Data Overview
+
+This analysis utilizes two primary datasets:
+
+1. **ASAM (Anti-Shipping Activity Messages) Dataset**^[1]
+   - Contains detailed records of maritime piracy incidents worldwide
+   - Includes location, date, and type of incident
+   - Collected by the U.S. Office of Naval Intelligence
+
+2. **Global Maritime Pirate Attacks Dataset (1993-2020)**^[2]
+   - Country-level indicators including GDP, corruption index, and crime rates
+   - Attack records with temporal and spatial information
+   - Compiled from various international maritime security reports
+
+# Pre-Analysis Visualizations
+
+```{r visualization1, echo=FALSE}
+# Load and prepare the data
+if (file.exists("ASAM_shp.zip")) {
+  if (!dir.exists("data/ASAM")) {
+    unzip("ASAM_shp.zip", exdir = "data/ASAM")
+  }
+  
+  if (file.exists("data/ASAM/ASAM.shp")) {
+    asam_data <- st_read("data/ASAM/ASAM.shp")
+    
+    # Create a density map
+    ggplot() +
+      geom_sf(data = world, fill = "lightgray", color = "gray") +
+      stat_density_2d(data = asam_data, 
+                     aes(x = st_coordinates(.)[,1], y = st_coordinates(.)[,2],
+                         fill = ..level..), 
+                     geom = "polygon", alpha = 0.5) +
+      scale_fill_gradient(low = "yellow", high = "red") +
+      labs(title = "Global Density of Pirate Attacks",
+           subtitle = "Higher density areas shown in red",
+           fill = "Attack Density") +
+      theme_minimal()
+  }
+}
+```
+
+*This density map shows the concentration of pirate attacks worldwide, with red areas indicating higher frequency of incidents. The Gulf of Aden and Southeast Asia show particularly high concentrations.*
+
+```{r visualization2, echo=FALSE}
+# Load country indicators
+gmpa_country_indicators <- read.csv("data/Global_maritime_Pirate_attacks_1993_2020/country_indicators.csv")
+
+# Create correlation matrix
+correlation_data <- gmpa_country_indicators %>%
+  select(GDP, corruption_index, homicide_rate, unemployment_rate)
+
+cor_matrix <- cor(correlation_data, use = "complete.obs")
+
+corrplot(cor_matrix, method = "color", type = "upper",
+         addCoef.col = "black", tl.col = "black", tl.srt = 45,
+         diag = FALSE,
+         title = "Correlation Matrix of Risk Factors")
+```
+
+*This correlation matrix shows the relationships between various socio-economic indicators. Strong positive correlations between certain factors (e.g., corruption and unemployment) may indicate underlying systemic issues in high-risk regions.*
+
+```{r visualization3, echo=FALSE}
+# Temporal analysis
+gmpa_pirate_attacks <- read.csv("data/Global_maritime_Pirate_attacks_1993_2020/pirate_attacks.csv")
+gmpa_pirate_attacks$date <- as.Date(gmpa_pirate_attacks$date)
+
+time_series <- gmpa_pirate_attacks %>%
+  mutate(year = format(date, "%Y")) %>%
+  group_by(year) %>%
+  summarise(attacks = n())
+
+ggplot(time_series, aes(x = year, y = attacks, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Temporal Trend of Pirate Attacks (1993-2020)",
+       x = "Year",
+       y = "Number of Attacks") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+*This time series plot shows the evolution of pirate attacks over time, revealing significant fluctuations and potential seasonal patterns in attack frequency.*
+
+# Spatial Analysis
+
+## Spatial Autocorrelation Analysis
+
+Spatial autocorrelation analysis helps identify whether pirate attacks are randomly distributed or if they exhibit clustering patterns. This is important for understanding if certain regions are systematically more vulnerable to attacks.
+
+```{r spatial_analysis, echo=FALSE}
+# Create a grid for spatial analysis
+grid <- st_make_grid(world, cellsize = 5) %>%
+  st_sf() %>%
+  st_intersection(world)
+
+# Count points in each grid cell
+grid$attack_count <- lengths(st_intersects(grid, asam_data))
+
+# Calculate Moran's I
+library(spdep)
+grid_sp <- as(grid, "Spatial")
+grid_nb <- poly2nb(grid_sp)
+grid_weights <- nb2listw(grid_nb)
+moran_test <- moran.test(grid$attack_count, grid_weights)
+
+# Visualize results
+ggplot() +
+  geom_sf(data = world, fill = "lightgray", color = "gray") +
+  geom_sf(data = grid, aes(fill = attack_count), alpha = 0.7) +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(title = "Spatial Distribution of Pirate Attacks",
+       subtitle = paste("Moran's I:", round(moran_test$estimate[1], 3)),
+       fill = "Number of Attacks") +
+  theme_minimal()
+```
+
+# Interactive Web Application
+
+```{r shiny_app, echo=FALSE}
+# Define UI
+ui <- fluidPage(
+  titlePanel("Maritime Piracy Risk Analysis"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("region", "Select Region:",
+                  choices = c("Global", "Gulf of Aden", "Strait of Malacca", "Gulf of Guinea")),
+      sliderInput("year_range", "Year Range:",
+                  min = 1993, max = 2020,
+                  value = c(1993, 2020)),
+      selectInput("risk_factor", "Risk Factor:",
+                  choices = c("GDP", "Corruption Index", "Homicide Rate", "Unemployment Rate"))
+    ),
+    
+    mainPanel(
+      leafletOutput("map"),
+      plotOutput("time_series"),
+      plotOutput("risk_plot")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output) {
+  output$map <- renderLeaflet({
+    leaflet() %>%
+      addTiles() %>%
+      addCircleMarkers(data = asam_data,
+                      radius = 5,
+                      color = "red",
+                      fillOpacity = 0.5)
+  })
+  
+  output$time_series <- renderPlot({
+    # Time series plot code
+  })
+  
+  output$risk_plot <- renderPlot({
+    # Risk factor plot code
+  })
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+```
+
+# References
+
+1. U.S. Office of Naval Intelligence. (2020). Anti-Shipping Activity Messages (ASAM) Database.
+2. Global Maritime Pirate Attacks Dataset (1993-2020). International Maritime Bureau. 
