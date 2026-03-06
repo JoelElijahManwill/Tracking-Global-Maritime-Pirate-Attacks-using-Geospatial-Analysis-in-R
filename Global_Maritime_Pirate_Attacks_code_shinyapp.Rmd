@@ -1,6 +1,6 @@
 ---
 title: "Part 3 Final Project Report: Spatial Analysis of Maritime Piracy"
-author: "Haley Burdick + Elijah Manwill"
+author: "Elijah Manwill"
 date: "2025-04-18"
 output: html_document
 ---
